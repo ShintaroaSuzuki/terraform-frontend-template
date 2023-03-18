@@ -1,0 +1,100 @@
+name: CI/CD
+on:
+  push:
+    branches:
+      - "main"
+      - "staging"
+      - "production"
+  pull_request:
+    branches:
+      - "main"
+      - "staging"
+      - "production"
+env:
+  TZ: Asia/Tokyo
+jobs:
+  test:
+    name: Execute React Test
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v3
+
+    #   - name: Setup Environment
+    #     uses: ./.github/actions/setup-env
+
+    #   - name: Execute jest
+    #     run: |
+    #       cd app
+    #       yarn jest --silent --coverage --colors
+
+    #   - name: Jest coverage comment
+    #     if: always()
+    #     uses: MishaKav/jest-coverage-comment@main
+    #     with:
+    #       coverage-summary-path: app/coverage/coverage-summary.json
+    #       coverage-path: app/coverage/coverage.txt
+
+  deploy:
+    name: Build & Deploy
+    if: ${{ ! failure() }}
+    needs: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v3
+
+      - name: Setup Environment
+        uses: ./.github/actions/setup-env
+
+      - name: Set env to dev
+        if: ${{ github.base_ref == 'main' || github.ref == 'refs/heads/main' }}
+        run: |
+          echo "AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID_DEV }}" >> $GITHUB_ENV
+          echo "AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY_DEV }}" >> $GITHUB_ENV
+          echo "TERRAFORM_DIR=./terraform/envs/dev" >> $GITHUB_ENV
+
+      - name: Set env to stg
+        if: ${{ github.base_ref == 'staging' || github.ref == 'refs/heads/staging' }}
+        run: |
+          echo "AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID_STG }}" >> $GITHUB_ENV
+          echo "AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY_STG }}" >> $GITHUB_ENV
+          echo "TERRAFORM_DIR=./terraform/envs/stg" >> $GITHUB_ENV
+
+      - name: Set env to prd
+        if: ${{ github.base_ref == 'production' || github.ref == 'refs/heads/production' }}
+        run: |
+          echo "AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID_PRD }}" >> $GITHUB_ENV
+          echo "AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY_PRD }}" >> $GITHUB_ENV
+          echo "TERRAFORM_DIR=./terraform/envs/prd" >> $GITHUB_ENV
+
+      - name: configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-northeast-1
+
+      - name: Build
+        env:
+          GENERATE_SOURCEMAP: ${{ github.base_ref != 'production' && github.ref != 'refs/heads/production' }}
+          CI: true
+        run: |
+          cd app
+          yarn build
+
+      - name: terraform setup
+        uses: hashicorp/setup-terraform@v2
+
+      - name: terraform plan
+        run: |
+          cd ${{ env.TERRAFORM_DIR }}
+          terraform init
+          terraform plan
+
+      - name: terraform apply
+        if: ${{ github.event_name == 'push' }}
+        run: |
+          cd ${{ env.TERRAFORM_DIR }}
+          terraform apply -auto-approve
